@@ -1,15 +1,52 @@
 import cv2
+from Cocoa import NSDate, NSRunLoop
+from AVFoundation import AVCaptureDevice, AVAuthorizationStatusAuthorized, AVMediaTypeVideo
 from utils.logger import get_logger
 from config.settings import CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, CAMERA_FPS
 
 logger = get_logger(__name__)
+
+if hasattr(cv2, "setLogLevel"):
+    cv2.setLogLevel(0)
 
 
 class Camera:
     def __init__(self):
         self.cap = None
 
+    def _ensure_permission(self):
+        status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeVideo)
+        if status == AVAuthorizationStatusAuthorized:
+            return
+
+        granted = {"value": False}
+
+        def completion_handler(allowed):
+            granted["value"] = bool(allowed)
+
+        AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+            AVMediaTypeVideo,
+            completion_handler
+        )
+
+        # Keep the main-thread run loop moving while the permission dialog resolves.
+        deadline = NSDate.dateWithTimeIntervalSinceNow_(10.0)
+        while NSDate.date().timeIntervalSinceDate_(deadline) < 0:
+            NSRunLoop.currentRunLoop().runUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(0.1)
+            )
+            status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeVideo)
+            if status != 0:
+                break
+
+        if not granted["value"] and \
+           AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeVideo) != \
+           AVAuthorizationStatusAuthorized:
+            logger.error("Camera permission not granted by macOS.")
+            raise RuntimeError("Camera permission not granted.")
+
     def start(self):
+        self._ensure_permission()
         self.cap = cv2.VideoCapture(CAMERA_INDEX)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)

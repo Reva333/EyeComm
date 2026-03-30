@@ -1,6 +1,12 @@
 import numpy as np
 from filterpy.kalman import KalmanFilter
-from config.settings import KALMAN_PROCESS_NOISE, KALMAN_MEASUREMENT_NOISE, SMOOTHING_FACTOR
+from config.settings import (
+    FAST_SMOOTHING_FACTOR,
+    KALMAN_MEASUREMENT_NOISE,
+    KALMAN_PROCESS_NOISE,
+    SMALL_MOVEMENT_THRESHOLD,
+    SMOOTHING_FACTOR,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -9,6 +15,7 @@ logger = get_logger(__name__)
 class GazeSmoother:
     def __init__(self):
         self.kf = self._build_kalman()
+        self.ewma = EWMASmoother()
         self.initialized = False
         logger.info("GazeSmoother initialized with Kalman filter.")
 
@@ -33,15 +40,18 @@ class GazeSmoother:
         if not self.initialized:
             self.kf.x = np.array([[x], [y], [0], [0]], dtype=float)
             self.initialized = True
-            return x, y
+            return self.ewma.smooth(x, y)
 
         self.kf.predict()
         self.kf.update(np.array([[x], [y]], dtype=float))
 
-        return float(self.kf.x[0][0]), float(self.kf.x[1][0])
+        filtered_x = float(self.kf.x[0][0])
+        filtered_y = float(self.kf.x[1][0])
+        return self.ewma.smooth(filtered_x, filtered_y)
 
     def reset(self):
         self.kf = self._build_kalman()
+        self.ewma.reset()
         self.initialized = False
         logger.info("GazeSmoother reset.")
 
@@ -55,8 +65,14 @@ class EWMASmoother:
         if self.x is None:
             self.x, self.y = x, y
         else:
-            self.x = SMOOTHING_FACTOR * self.x + (1 - SMOOTHING_FACTOR) * x
-            self.y = SMOOTHING_FACTOR * self.y + (1 - SMOOTHING_FACTOR) * y
+            movement = np.hypot(x - self.x, y - self.y)
+            alpha = (
+                FAST_SMOOTHING_FACTOR
+                if movement > SMALL_MOVEMENT_THRESHOLD
+                else SMOOTHING_FACTOR
+            )
+            self.x = alpha * self.x + (1 - alpha) * x
+            self.y = alpha * self.y + (1 - alpha) * y
         return self.x, self.y
 
     def reset(self):

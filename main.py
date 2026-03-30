@@ -1,3 +1,12 @@
+import os
+import warnings
+
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("GLOG_minloglevel", "3")
+os.environ.setdefault("ABSL_LOG_LEVEL", "3")
+warnings.filterwarnings("ignore")
+
 import threading
 import queue
 from config.settings           import DEVICE, SCREEN_WIDTH, SCREEN_HEIGHT
@@ -31,10 +40,9 @@ def gaze_to_frame(nx, ny, fw, fh):
     return int(nx * fw), int(ny * fh)
 
 
-def gaze_thread(state: SharedState):
+def gaze_thread(state: SharedState, camera: Camera):
     from config.settings import FRAME_WIDTH, FRAME_HEIGHT
 
-    camera    = Camera()
     detector  = GazeDetector()
     smoother  = GazeSmoother()
     estimator = GazeEstimator()
@@ -43,7 +51,6 @@ def gaze_thread(state: SharedState):
     feedback  = FeedbackManager()
 
     try:
-        camera.start()
         logger.info("Gaze thread running.")
 
         while state.running:
@@ -119,9 +126,17 @@ def main():
                 f"Screen: {SCREEN_WIDTH}x{SCREEN_HEIGHT}")
 
     state = SharedState()
+    camera = Camera()
+
+    try:
+        # macOS camera authorization must be triggered from the main thread.
+        camera.start()
+    except Exception as e:
+        logger.error(f"Camera startup failed on main thread: {e}")
+        return
 
     # Gaze in background
-    t = threading.Thread(target=gaze_thread, args=(state,), daemon=True)
+    t = threading.Thread(target=gaze_thread, args=(state, camera), daemon=True)
     t.start()
 
     # Keyboard + preview on main thread

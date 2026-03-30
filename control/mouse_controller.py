@@ -1,6 +1,6 @@
 import pyautogui
 from utils.logger import get_logger
-from config.settings import SCREEN_WIDTH, SCREEN_HEIGHT
+from config.settings import CURSOR_DEADZONE, SCREEN_WIDTH, SCREEN_HEIGHT
 
 logger = get_logger(__name__)
 
@@ -10,11 +10,18 @@ pyautogui.PAUSE    = 0.0
 
 class MouseController:
     def __init__(self):
+        self.last_position = None
         logger.info("MouseController initialized.")
 
     def move(self, x: int, y: int):
         try:
+            if self.last_position is not None:
+                px, py = self.last_position
+                if ((x - px) ** 2 + (y - py) ** 2) ** 0.5 < CURSOR_DEADZONE:
+                    return
+
             pyautogui.moveTo(x, y, duration=0.0)
+            self.last_position = (x, y)
         except Exception as e:
             logger.warning(f"Mouse move failed: {e}")
 
