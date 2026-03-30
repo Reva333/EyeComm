@@ -80,6 +80,11 @@ class GazeDetector:
         _, right_y0  = lm(RIGHT_EYE_TOP)
         _, right_y1  = lm(RIGHT_EYE_BOTTOM)
 
+        left_eye_center_x = (left_x0 + left_x1) / 2.0
+        left_eye_center_y = (left_y0 + left_y1) / 2.0
+        right_eye_center_x = (right_x0 + right_x1) / 2.0
+        right_eye_center_y = (right_y0 + right_y1) / 2.0
+
         # --- Relative iris position within eye socket ---
         def relative_pos(iris, x0, x1, y0, y1):
             rx = (iris[0] - x0) / (x1 - x0 + 1e-6)
@@ -95,13 +100,12 @@ class GazeDetector:
         raw_nx = (left_rx + right_rx) / 2.0
         raw_ny = (left_ry + right_ry) / 2.0
 
+        face_nx = ((left_eye_center_x + right_eye_center_x) / 2.0) / w
+        face_ny = ((left_eye_center_y + right_eye_center_y) / 2.0) / h
+
         # --- Head pose ---
         yaw, pitch = self._estimate_head_pose(landmarks, w, h)
         yaw, pitch = self._smooth_head_pose(yaw, pitch)
-
-        # --- Final gaze (no compensation for now — stable baseline) ---
-        nx = max(0.0, min(1.0, raw_nx))
-        ny = max(0.0, min(1.0, raw_ny))
 
         # --- Eye openness ---
         def eye_ratio(indices):
@@ -118,8 +122,8 @@ class GazeDetector:
             "right_iris":      (int(right_cx), int(right_cy)),
             "left_eye_ratio":  left_ratio,
             "right_eye_ratio": right_ratio,
-            "gaze_point":      (nx, ny),
             "raw_gaze":        (raw_nx, raw_ny),
+            "face_anchor":     (face_nx, face_ny),
             "yaw":             yaw,
             "pitch":           pitch,
             "landmarks":       landmarks
