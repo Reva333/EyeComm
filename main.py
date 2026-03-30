@@ -9,7 +9,9 @@ warnings.filterwarnings("ignore")
 
 import threading
 import queue
+import time
 from config.settings           import DEVICE, SCREEN_WIDTH, SCREEN_HEIGHT
+from gaze.calibration          import GazeMeasurement
 from gaze.camera               import Camera
 from gaze.detector             import GazeDetector
 from gaze.smoother             import GazeSmoother
@@ -17,6 +19,7 @@ from gaze.estimator            import GazeEstimator
 from control.mouse_controller  import MouseController
 from control.dwell_handler     import DwellHandler
 from keyboard.virtual_keyboard import VirtualKeyboard
+from ui.calibration_ui         import CalibrationUI
 from ui.feedback               import FeedbackManager
 from keyboard.key_layout       import get_keyboard_y
 from utils.logger              import get_logger
@@ -34,6 +37,9 @@ class SharedState:
         self.dwell_prog  = 0.0
         self.frame_gaze  = (0, 0)
         self.flashing    = False
+        self.latest_measurement = None
+        self.calibration_profile = None
+        self.calibrated = False
 
 
 def gaze_to_frame(nx, ny, fw, fh):
@@ -65,44 +71,68 @@ def gaze_thread(state: SharedState, camera: Camera):
                     state.frame = frame.copy()
                 continue
 
-            nx, ny      = gaze_data["gaze_point"]
             left_ratio  = gaze_data["left_eye_ratio"]
             right_ratio = gaze_data["right_eye_ratio"]
+            raw_nx, raw_ny = gaze_data["raw_gaze"]
+            face_nx, face_ny = gaze_data["face_anchor"]
             yaw         = gaze_data["yaw"]
             pitch       = gaze_data["pitch"]
+            measurement = GazeMeasurement(
+                raw_nx=raw_nx,
+                raw_ny=raw_ny,
+                face_nx=face_nx,
+                face_ny=face_ny,
+                yaw=yaw,
+                pitch=pitch,
+                timestamp=time.time(),
+            )
 
-            nx, ny = smoother.smooth(nx, ny)
-            screen_x, screen_y = estimator.estimate(nx, ny)
+            with state.lock:
+                profile = state.calibration_profile
+                calibrated = state.calibrated
 
-            # Push to keyboard
-            try:
-                if state.gaze_queue.full():
-                    state.gaze_queue.get_nowait()
-                state.gaze_queue.put_nowait((screen_x, screen_y))
-            except Exception:
-                pass
+            if calibrated and profile is not None:
+                nx, ny = profile.map_to_normalized(measurement)
+                nx, ny = smoother.smooth(nx, ny)
+                screen_x, screen_y = estimator.estimate(nx, ny)
 
-            # Move mouse
-            mouse.move(screen_x, screen_y)
+                try:
+                    if state.gaze_queue.full():
+                        state.gaze_queue.get_nowait()
+                    state.gaze_queue.put_nowait((screen_x, screen_y))
+                except Exception:
+                    pass
 
-            # Dwell — only above keyboard area
-            if screen_y < get_keyboard_y():
-                clicked = dwell.update(screen_x, screen_y)
-                if clicked:
-                    mouse.click(screen_x, screen_y)
-                    feedback.trigger()
+                mouse.move(screen_x, screen_y)
+
+                if screen_y < get_keyboard_y():
+                    clicked = dwell.update(screen_x, screen_y)
+                    if clicked:
+                        mouse.click(screen_x, screen_y)
+                        feedback.trigger()
+                else:
+                    dwell.reset()
             else:
+                nx, ny = 0.5, 0.5
+                screen_x, screen_y = estimator.estimate(nx, ny)
                 dwell.reset()
 
-            frame_gaze = gaze_to_frame(nx, ny, FRAME_WIDTH, FRAME_HEIGHT)
+            left_iris = gaze_data["left_iris"]
+            right_iris = gaze_data["right_iris"]
+            frame_gaze = (
+                int((left_iris[0] + right_iris[0]) / 2),
+                int((left_iris[1] + right_iris[1]) / 2),
+            )
             debug_info = {
                 "gaze" : f"{nx:.2f}, {ny:.2f}",
+                "raw"  : f"{raw_nx:.2f}, {raw_ny:.2f}",
                 "screen": f"{screen_x}, {screen_y}",
                 "dwell" : f"{dwell.progress:.0%}",
                 "yaw"   : f"{yaw:.1f}°",
                 "pitch" : f"{pitch:.1f}°",
                 "L eye" : f"{left_ratio:.2f}",
                 "R eye" : f"{right_ratio:.2f}",
+                "mode"  : "live" if calibrated else "calibrating",
                 "device": str(DEVICE),
             }
 
@@ -112,6 +142,7 @@ def gaze_thread(state: SharedState, camera: Camera):
                 state.dwell_prog = dwell.progress
                 state.frame_gaze = frame_gaze
                 state.flashing   = feedback.is_flashing
+                state.latest_measurement = measurement
 
     except Exception as e:
         logger.error(f"Gaze thread error: {e}")
@@ -138,6 +169,18 @@ def main():
     # Gaze in background
     t = threading.Thread(target=gaze_thread, args=(state, camera), daemon=True)
     t.start()
+
+    calibration = CalibrationUI(state)
+    profile = calibration.run()
+    if profile is None:
+        state.running = False
+        t.join(timeout=3)
+        logger.error("Calibration did not complete.")
+        return
+
+    with state.lock:
+        state.calibration_profile = profile
+        state.calibrated = True
 
     # Keyboard + preview on main thread
     keyboard = VirtualKeyboard(state)
